@@ -17,7 +17,7 @@ def from_disk(filename):
         return deserialize(serialized)
 
 def prepare_simple_tx(utxos, sender_private_key, recipient_public_key, amount):
-    from blockcoin import Tx, TxIn, TxOut
+    from myblockcoin import Tx, TxIn, TxOut
     sender_public_key = sender_private_key.get_verifying_key()
 
     # Construct tx.tx_outs
@@ -36,7 +36,7 @@ def prepare_simple_tx(utxos, sender_private_key, recipient_public_key, amount):
     tx_id = uuid.uuid4()
     change = tx_in_sum - amount
     tx_outs = [
-        TxOut(tx_id=tx_id, index=0, amount=amount, public_key=recipient_public_key), 
+        TxOut(tx_id=tx_id, index=0, amount=amount, public_key=recipient_public_key),
         TxOut(tx_id=tx_id, index=1, amount=change, public_key=sender_public_key),
     ]
 
