@@ -372,7 +372,6 @@ class Node:
             if tx in self.mempool:
                 self.mempool.remove(tx)
                 logging.info(f"Removed tx from mempool")
-        
 
         # Sanity check
         prev_id = self.active_chain[0].id
@@ -726,8 +725,8 @@ def main(args):
         logger.info("starting miner")
         node_id = int(os.environ["ID"])
         mining_public_key = node_public_key(node_id)
-        thread = threading.Thread(target=mine_forever, args=(mining_public_key,), name="miner")
-        thread.start()
+        miner_thread = threading.Thread(target=mine_forever, args=(mining_public_key,), name="miner")
+        miner_thread.start()
 
     elif args["ping"]:
         address = address_from_host(args["--node"])
