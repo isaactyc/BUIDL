@@ -1,11 +1,12 @@
 """
-POWP2PCoin
+POWCoin Part 1
+* Add code to simulate network latency and packet loss
 
 Usage:
-  powp2pcoin.py serve
-  powp2pcoin.py ping [--node <node>]
-  powp2pcoin.py tx <from> <to> <amount> [--node <node>]
-  powp2pcoin.py balance <name> [--node <node>]
+  powcoin_one.py serve
+  powcoin_one.py ping [--node <node>]
+  powcoin_one.py tx <from> <to> <amount> [--node <node>]
+  powcoin_one.py balance <name> [--node <node>]
 
 Options:
   -h --help      Show this screen.
@@ -214,7 +215,7 @@ class Node:
 
         # Block propogation
         for peer in self.peers:
-            send_message(peer, "blocks", [block])
+            disrupt(func=send_message, args=[peer, "blocks", [block]])
 
 def prepare_simple_tx(utxos, sender_private_key, recipient_public_key, amount):
     sender_public_key = sender_private_key.get_verifying_key()
@@ -336,6 +337,10 @@ def prepare_message(command, data):
     serialized_message = serialize(message)
     length = len(serialized_message).to_bytes(4, 'big')
     return length + serialized_message
+
+def disrupt(func, args):
+    if random.randint(0, 10) != 0:
+        threading.Timer(random.random(), func, args).start()
 
 class TCPHandler(socketserver.BaseRequestHandler):
 

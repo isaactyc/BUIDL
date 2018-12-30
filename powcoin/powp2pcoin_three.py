@@ -1,11 +1,11 @@
 """
-POWP2PCoin
+POW Syndacoin
 
 Usage:
-  powp2pcoin.py serve
-  powp2pcoin.py ping [--node <node>]
-  powp2pcoin.py tx <from> <to> <amount> [--node <node>]
-  powp2pcoin.py balance <name> [--node <node>]
+  pow_syndacoin.py.py serve
+  pow_syndacoin.py.py ping [--node <node>]
+  pow_syndacoin.py.py tx <from> <to> <amount> [--node <node>]
+  pow_syndacoin.py.py balance <name> [--node <node>]
 
 Options:
   -h --help      Show this screen.
@@ -22,7 +22,6 @@ PORT = 10000
 GET_BLOCKS_CHUNK = 10
 BLOCK_SUBSIDY = 50
 node = None
-lock = threading.Lock()
 
 logging.basicConfig(level="INFO", format='%(threadName)-6s | %(message)s')
 logger = logging.getLogger(__name__)
@@ -294,8 +293,7 @@ def mine_forever(public_key):
         if mined_block:
             logger.info("")
             logger.info("Mined a block")
-            with lock:
-                node.handle_block(mined_block)
+            node.handle_block(mined_block)
 
 def mine_genesis_block(public_key):
     global node
@@ -409,8 +407,7 @@ class TCPHandler(socketserver.BaseRequestHandler):
 
             for block in data:
                 try:
-                    with lock:
-                        node.handle_block(block)
+                    node.handle_block(block)
                     mining_interrupt.set()
                 except:
                     logger.info("Rejected block")
