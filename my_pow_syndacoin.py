@@ -1,41 +1,39 @@
 """
-MyBlockCoin
+BlockCoin
 
 Usage:
-  myblockcoin.py serve
-  myblockcoin.py ping [--node <node>]
-  myblockcoin.py tx <from> <to> <amount> [--node <node>]
-  myblockcoin.py balance <name> [--node <node>]
+  blockcoin.py serve
+  blockcoin.py ping [--node <node>]
+  blockcoin.py tx <from> <to> <amount> [--node <node>]
+  blockcoin.py balance <name> [--node <node>]
 
 Options:
-  -h --help     Show this screen.
-  --node=<node> Hostname of node [default: node0]
+  -h --help      Show this screen.
+  --node=<node>  Hostname of node [default: node0]
 """
 
-import uuid, socketserver, socket, sys, argparse, time, os, logging, threading
+import uuid, socketserver, socket, sys, argparse, time, os, logging, threading, hashlib, random
 
 from docopt import docopt
 from copy import deepcopy
 from ecdsa import SigningKey, SECP256k1
 from utils import serialize, deserialize
 
-from identities import user_public_key, user_private_key, bank_public_key, bank_private_key, airdrop_tx
+from identities import user_private_key, user_public_key
+
+PORT = 10000
+node = None
 
 logging.basicConfig(
     level="INFO",
-    format='%(asctime)-15s %(levelname)s %(message)s')
+    format='%(asctime)-15s %(levelname)s %(message)s',
+)
 logger = logging.getLogger(__name__)
 
-HOST, PORT = 'localhost', 5000
-ADDRESS = (HOST, PORT)
-bank = None
-BLOCK_TIME = 5
-NUM_BANKS = 3
 
 def spend_message(tx, index):
     outpoint = tx.tx_ins[index].outpoint
     return serialize(outpoint) + serialize(tx.tx_outs)
-
 
 class Tx:
 
@@ -78,54 +76,62 @@ class TxOut:
         return (self.tx_id, self.index)
 
 class Block:
-    def __init__(self, txns, timestamp = None, signature = None):
-        if timestamp == None:
-            timestamp = time.time()
-        self.timestamp = timestamp
-        self.signature = signature
+
+    def __init__(self, txns, prev_id, nonce):
         self.txns = txns
+        self.prev_id = prev_id
+        self.nonce = nonce
 
     @property
-    def message(self):
-        data = [self.timestamp, self.txns]
-        return serialize(data)
+    def header(self):
+        return serialize(self)
 
-    def sign(self,private_key):
-        self.signature = private_key.sign(self.message)
+    @property
+    def id(self):
+        return hashlib.sha256(self.header).hexdigest()
 
-class Bank:
+    @property
+    def proof(self):
+        return int(self.id, 16)
 
-    def __init__(self, id, private_key):
-        self.id = id
-        self.private_key = private_key
+    def __repr__(self):
+        return f"Block(prev_id = {self.prev_id} id = {self.id})"
+
+class Node:
+
+    def __init__(self):
         self.blocks = []
         self.utxo_set = {}
         self.mempool = []
-        self.peer_addresses = {(hostname, PORT) for hostname in os.environ['PEERS'].split(',')}
-
-    @property
-    def next_id(self):
-        return len(self.blocks) % NUM_BANKS
-
-    @property
-    def our_turn(self):
-        return self.id == self.next_id
+        self.peer_addresses = {(p, PORT) for p in os.environ.get('PEERS', '').split(',') if p}
 
     @property
     def mempool_outpoints(self):
         return [tx_in.outpoint for tx in self.mempool for tx_in in tx.tx_ins]
 
+    def fetch_utxos(self, public_key):
+        return [tx_out for tx_out in self.utxo_set.values()
+                if tx_out.public_key == public_key]
+
     def update_utxo_set(self, tx):
+        # Remove utxos that were just spent
         for tx_in in tx.tx_ins:
             del self.utxo_set[tx_in.outpoint]
+        # Save utxos which were just created
         for tx_out in tx.tx_outs:
             self.utxo_set[tx_out.outpoint] = tx_out
+
+    def fetch_balance(self, public_key):
+        # Fetch utxos associated with this public key
+        utxos = self.fetch_utxos(public_key)
+        # Sum the amounts
+        return sum([tx_out.amount for tx_out in utxos])
 
     def validate_tx(self, tx):
         in_sum = 0
         out_sum = 0
         for index, tx_in in enumerate(tx.tx_ins):
-            # TxIn spending unspent output
+            # TxIn spending an unspent output
             assert tx_in.outpoint in self.utxo_set
 
             # No pending transactions spending this same output
@@ -143,71 +149,38 @@ class Bank:
             in_sum += amount
 
         for tx_out in tx.tx_outs:
+            # Sum up the total outpouts
             out_sum += tx_out.amount
 
+        # Check no value created or destroyed
         assert in_sum == out_sum
 
     def handle_tx(self, tx):
-        # Save to self.utxo_set if it's valid
         self.validate_tx(tx)
         self.mempool.append(tx)
 
-    def handle_block(self, block):
-        #Verify bank signature if height > 0
-        if len(self.blocks) > 0:
-            public_key = bank_public_key(self.next_id)
-            public_key.verify(block.signature, block.message)
+    def validate_block(self, block):
+        assert block.proof < POW_TARGET, "Insufficient Proof-of-Work"
+        assert block.prev_id == self.blocks[-1].id
 
-        #Verify every transaction
+    def handle_block(self, block):
+        #Check work, chain ordering
+        self.validate_block(block)
+        # Check the transactions are valid
         for tx in block.txns:
             self.validate_tx(tx)
 
-        # Update update self.utxo_set
+        # If they're all good, update self.blocks and self.utxo_set
         for tx in block.txns:
             self.update_utxo_set(tx)
 
-        # Update self.blocks
+        # Add the block to our chain
         self.blocks.append(block)
-        #Schedule next block
-        self.schedule_next_block()
+        logger.info(f"Block accepted: height = {len(self.blocks) - 1}")
 
-    def fetch_utxos(self, public_key):
-        return [utxo for utxo in self.utxo_set.values()
-                if utxo.public_key == public_key]
-
-    def fetch_balance(self, public_key):
-        # Fetch utxos associated with this public key
-        utxos = self.fetch_utxos(public_key)
-        # Sum the amounts
-        return sum([tx_out.amount for tx_out in utxos])
-
-    def make_block(self):
-        txns = deepcopy(self.mempool)
-        self.mempool = []
-        block = Block(txns=txns)
-        block.sign(self.private_key)
-        return block
-
-    def submit_block(self):
-        #Create the block
-        block = self.make_block()
-        #Save block locally
-        self.handle_block(block)
-        #Tell the other banks
-        for address in self.peer_addresses:
-            send_message(address, "block", block)
-
-    def schedule_next_block(self):
-        if self.our_turn:
-            threading.Timer(BLOCK_TIME, self.submit_block).start()
-
-    def airdrop(self, tx):
-        assert len(self.blocks) == 0
-        # Update update self.utxo_set
-        self.update_utxo_set(tx)
-        # Update self.blocks
-        block = Block([tx])
-        self.blocks.append(block)
+        #Block propogation
+        for peer_address in self.peer_addresses:
+            send_message(peer_address, "block", block)
 
 def prepare_simple_tx(utxos, sender_private_key, recipient_public_key, amount):
     sender_public_key = sender_private_key.get_verifying_key()
@@ -239,12 +212,56 @@ def prepare_simple_tx(utxos, sender_private_key, recipient_public_key, amount):
 
     return tx
 
+
 def prepare_message(command, data):
     return {
         "command": command,
         "data": data,
     }
 
+##########
+# Mining #
+##########
+
+DIFFICULTY_BITS = 20
+POW_TARGET = 2 ** (256 - DIFFICULTY_BITS)
+mining_interrupt = threading.Event()
+
+def mine_block(block):
+    while block.proof >= POW_TARGET:
+        if mining_interrupt.is_set():
+            loger.info("Mining interrupted")
+            mining_interrupt.clear()
+            return
+        block.nonce += 1
+    return block.nonce
+
+def mine_forever():
+    logging.info("Starting miner")
+    while True:
+        unmined_block = Block(
+            txns = node.mempool,
+            prev_id = node.blocks[-1].id,
+            nonce = random.randint(0, 1000000000),
+        )
+        mined_block = mine_block(unmined_block)
+
+        if mined_block:
+            logger.info("")
+            logger.info("Mined a block")
+            node.handle_block(mined_block)
+
+def mine_genesis_block():
+    global node
+    unmined_block = Block(txns = [], prev_id = None, nonce = 0)
+    mined_block = mine_block(unmined_block)
+    node.blocks.append(mined_block)
+    #TODO: Update UTXO set, award coinbase, etc
+
+
+##############
+# Networking #
+##############
 
 class TCPHandler(socketserver.BaseRequestHandler):
 
@@ -258,36 +275,35 @@ class TCPHandler(socketserver.BaseRequestHandler):
         command = message["command"]
         data = message["data"]
 
-        logger.info(f"Received {command}")
+        logger.info(f"received {command}")
 
         if command == "ping":
             self.respond(command="pong", data="")
 
         if command == "block":
-            bank.handle_block(data)
+            if data.prev_id == node.blocks[-1].id:
+                node.handle_block(data)
+                #interrupt mining thread
+                mining_interrupt.set()
 
         if command == "tx":
-            try:
-                bank.handle_tx(data)
-                self.respond(command = "tx-response", data= "accepted")
-            except:
-                self.respond(command="tx-response", data="rejected")
+            node.handle_tx(data)
 
         if command == "balance":
-            balance = bank.fetch_balance(data)
+            balance = node.fetch_balance(data)
             self.respond(command="balance-response", data=balance)
 
         if command == "utxos":
-            utxos = bank.fetch_utxos(data)
+            utxos = node.fetch_utxos(data)
             self.respond(command="utxos-response", data=utxos)
 
-"""def external_address(node):
+def external_address(node):
     i = int(node[-1])
-    print (i)
     port = PORT + i
-    return ('localhost', port)"""
+    return ('localhost', port)
 
 def serve():
+    logger.info("Starting server")
     server = socketserver.TCPServer(("0.0.0.0", PORT), TCPHandler)
     server.serve_forever()
 
@@ -299,27 +315,31 @@ def send_message(address, command, data, response=False):
         if response:
             return deserialize(s.recv(5000))
 
+#######
+# CLI #
+#######
 def main(args):
-    # Can't use 0.0.0.0 from the outside to talk to the docker containers
-    local_address = ("127.0.0.1", 5000)
     if args["serve"]:
-        #TODO bank = Bank ...
-        global bank
-        bank_id = int(os.environ["BANK_ID"])
-        bank = Bank(
-                id =bank_id,
-                private_key = bank_private_key(bank_id),
-        )
-        bank.airdrop(airdrop_tx())
-        bank.schedule_next_block()
-        serve()
+        global node
+        node = Node()
+
+        #TODO: mine genesis block
+        mine_genesis_block()
+
+        #Start server thread
+        server_thread = threading.Thread(target=serve, name= "server")
+        server_thread.start()
+
+        miner_thread = threading.Thread(target=mine_forever, name="miner")
+        miner_thread.start()
+
     elif args["ping"]:
-        # SOMETHING WRONG HERE address = address_from_host(args["--node"])
-        send_message(local_address, "ping", "")
+        address = address_from_host(args["--node"])
+        send_message(address, "ping", "")
     elif args["balance"]:
         public_key = user_public_key(args["<name>"])
-        # SOMETHING WRONG HERE address = external_address(args["--node"])
-        response = send_message(local_address, "balance", public_key, response=True)
+        address = external_address(args["--node"])
+        response = send_message(address, "balance", public_key, response=True)
         print(response["data"])
     elif args["tx"]:
         # Grab parameters
@@ -328,19 +348,19 @@ def main(args):
         recipient_private_key = user_private_key(args["<to>"])
         recipient_public_key = recipient_private_key.get_verifying_key()
         amount = int(args["<amount>"])
-        # SOMETHING WRONG HERE address = external_address(args["--node"])
+        address = external_address(args["--node"])
 
         # Fetch utxos available to spend
-        response = send_message(local_address, "utxos", sender_public_key, response=True)
+        response = send_message(address, "utxos", sender_public_key, response=True)
         utxos = response["data"]
 
         # Prepare transaction
         tx = prepare_simple_tx(utxos, sender_private_key, recipient_public_key, amount)
 
-        # send to bank
-        send_message(local_address, "tx", tx)
+        # send to node
+        send_message(address, "tx", tx)
     else:
-        print("Invalid commands")
+        print("Invalid command")
 
 
 if __name__ == '__main__':

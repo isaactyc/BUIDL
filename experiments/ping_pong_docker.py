@@ -3,7 +3,7 @@ import socket, socketserver, sys, logging
 host = "0.0.0.0"
 port = 10000
 address = (host, port)
-
+client_address = ("127.0.0.1", port)
 # A logger- a more reliable way to generate print statements,
 # but generating log files
 logging.basicConfig(
@@ -29,7 +29,7 @@ def serve():
 
 def ping():
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.connect(address)
+        s.connect(client_address)
         s.sendall(b"ping")
         data = s.recv(10)
         logger.info(f'Received {str(data)}')
